@@ -11,10 +11,11 @@ The data comprised of multiple sources including grades, demographic, residency 
 Feature subsets were selected based on correlation analysis and analysed based on their cluster scores.
 Although the data was a mix of numeric and categorical, it was accounted for with a suitable dissimilarity and clustering method.
 
+[HTML view](https://htmlpreview.github.io/?https://github.com/DanielFarahani/early_failure_detection/blob/master/report.html)
+
 ## Reporting
 
 Characteristics of each clusters were interpreted at a business level for the client Division.
 A review of the process and future improvements were documented throughout for the following iterations. These included pipe-line streamlining, data collection and application analysis.
 Also, documentation for future analyst and contributors were completed to ensure long term benefit.
 
-[HTML view](https://htmlpreview.github.io/?https://github.com/DanielFarahani/early_failure_detection/blob/master/report.html)
