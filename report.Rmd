@@ -1,0 +1,364 @@
+---
+title: "Segmentation"
+author: "Daniel"
+date: "13/09/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Setup 
+
+```{r import, message=FALSE, warning=FALSE}
+library(janitor)
+library(cluster)
+library(tidyverse)
+library(readxl)
+library(summarytools)
+library(Rtsne)
+library(skimr)
+library(forcats)
+library(rmarkdown)
+# render("C:/Users/u5800723/clustering_analysis/report.Rmd")
+```
+
+
+# Read in the raw data 
+
+```{r read, message=FALSE, warning=FALSE}
+cohort_res_raw <- read_csv("data/cohort_res_raw.csv") %>%
+  clean_names()
+```
+
+# Data Cleaning and Processing 
+
+```{r clean}
+# Take and clean features of interest
+cohort_cleaned <- cohort_res_raw %>%
+  select(
+    uid,
+    gpa_course_count,
+    age_group,
+    gender,
+    is_indigenous_flag,
+    is_disabled_flag,
+    disability_advice,
+    first_in_family,
+    catering_type,
+    owner,
+    religious_affiliation,
+    weekly_tariff_grouping,
+    program_career,
+    field_of_education_broad_description,
+    program_type,
+    program_plan_group,
+    appointment_flag,
+    home_state,
+    home_australia_ses,
+    home_low_ses,
+    home_metropolitan,
+    home_regional,
+    home_remote,
+    basis_of_admission,
+    attendance_type,
+    citizenship,
+    entrance_score_group_5,
+    drive_time_band2,
+    v_permit_no_days,
+    cello_parked_flag,
+    cello_parking_days,
+    academic_skills_booked,
+    academic_skills_dropin
+  ) %>%
+  replace_na(
+    list(
+      home_metropolitan = 0,
+      home_regional = 0,
+      home_remote = 0,
+      cello_parking_days = 0,
+      academic_skills_booked = 0,
+      academic_skills_dropin = 0,
+      v_permit_no_days = 0,
+      hall_residence = "Off campus",
+      catering_type = "off campus",
+      owner = "off campus",
+      religious_affiliation = "unknown",
+      weekly_tariff_grouping = "off campus",
+      field_of_education_broad_description = "09 - Society and Culture"
+    )
+  ) %>%
+  mutate(
+    home_overseas = ifelse(home_state == "Overseas", 1, 0),
+    is_local = ifelse(home_state == "ACT", 1, 0),
+    is_minority = ifelse(
+        home_australia_ses == "Low" |
+        basis_of_admission == "Mature age special entry" |
+        is_indigenous_flag == 1 |
+        is_disabled_flag == 1 |
+        first_in_family == 1,
+      yes = 1,
+      no = 0
+    ),
+    field_of_education_broad_description = ifelse(
+      field_of_education_broad_description == "00 - Not Allocated",
+      yes = "03 - Engineering and Related Technologies",
+      no = field_of_education_broad_description
+    ),
+    program_plan_group = fct_recode(
+      program_plan_group, 
+      double = "Flexible Doubles", 
+      double = "Vertical Double"),
+    religious_affiliation = fct_recode(
+      religious_affiliation,
+      religious = "Anglican",
+      religious = "Christian"
+    ),
+    age_group = ifelse(age_group == "< 17 Years", "17 below Years", age_group),
+    age_group = ifelse(age_group == "> 59 Years", "59 above Years", age_group)
+  ) %>%
+  mutate_at(
+    c(
+      "cello_parked_flag",
+      "disability_advice",
+      "first_in_family",
+      "home_low_ses",
+      "is_disabled_flag",
+      "is_indigenous_flag",
+      "appointment_flag",
+      "is_local",
+      "is_minority"
+    ),
+    as.factor
+  ) %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate(age_group = factor(age_group, ordered = TRUE),
+         drive_time_band2 = factor(drive_time_band2, ordered = TRUE),
+         entrance_score_group_5 = factor(entrance_score_group_5, ordered = TRUE),
+         home_australia_ses = factor(home_australia_ses, ordered = FALSE),
+         uid = as.character(uid),
+         entrance_score_group_5 = fct_collapse(
+           entrance_score_group_5,
+           "64 below" = c("30 - 34", "35 - 39", "40 - 44", "45 - 49", "50 - 54", "55 - 59", "60 - 64"))
+         ) %>%
+  mutate(
+    age_group2 = fct_collapse(
+      age_group,
+      "24 below Years" = c(
+        "17 below Years",
+        "17 Years",
+        "18 Years",
+        "19 Years",
+        "20 Years",
+        "21 Years",
+        "22 Years",
+        "23 Years",
+        "24 Years"
+      ),
+      "25 - 29 Years" = c("25 Years", "26 Years", "27 Years", "28 Years", "29 Years"),
+      "50 above Years" = c("50 - 59 Years", "59 above Years")
+    )
+  ) %>% 
+  mutate(age_group2 = factor(
+    age_group2,
+    ordered = TRUE,
+    levels = c(
+      "24 below Years",
+      "25 - 29 Years",
+      "30 - 39 Years",
+      "40 - 49 Years",
+      "50 above Years"
+    )
+  )) %>%
+  filter(!is.na(home_state))
+
+```
+
+## Cluster Preparation  
+
+### Select a subset of variables  
+
+```{r subset}
+cohort_subset <- cohort_cleaned %>% 
+  select(program_career, is_minority, appointment_flag, is_local) 
+```
+
+
+### Calculate Distance Matrix  
+
+```{r dist}
+diss_matrix <- daisy(cohort_subset, metric = "gower")
+```
+
+
+## Run Clustering Method  
+
+
+### Optimise Validation Method  
+
+```{r sil}
+search_gird <- 2:4
+
+search <- tibble(cluster = search_gird) %>% 
+  mutate(ave_sw = map_dbl(.x = cluster, 
+                          .f = ~pam(x = diss_matrix, 
+                                    k = .x, 
+                                    diss = TRUE)$silinfo$avg.width))
+
+# graph output of silhouette coefficient
+ggplot(search, aes(cluster, ave_sw)) +
+  geom_line() +
+  labs(title = "Which value of k returns the best silhouette coefficient",
+       subtitle = "Using a heuristic we can pick the Min value of k that gives a reasonable result",
+       y = "Average Silhouette Coefficient",
+       x = "Number of clusters (k)")
+```
+
+
+### Run final method
+
+```{r pam, message=FALSE, warning=FALSE, include=FALSE}
+pam_fit <- pam(diss_matrix, k = 3, diss = TRUE)
+summary(pam_fit)
+```
+
+
+## Interpretation  
+
+### Attach Labels  
+
+```{r re-attach}
+# attaching cluster labels
+clustered_cohort <- cohort_cleaned %>% 
+  mutate(cluster = pam_fit$clustering)
+
+```
+
+### T-SNE Plot
+
+```{r tsne}
+# Embed clusters in 2D for visualisation
+tsne_obj <- Rtsne(X = diss_matrix, is_distance = TRUE)
+
+# extract projected data points, add cluster assingment and make data frame
+tsne_data <- tsne_obj$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(clustered_cohort$cluster),
+         label = clustered_cohort$program_career) 
+
+# create mean of each cluster to add as centroid
+tsne_summ <- tsne_data %>% 
+  group_by(cluster) %>% 
+  summarise(X = mean(X), 
+            Y = mean(Y))
+
+# create convex hulls 
+hulls <- tsne_data %>% 
+  group_by(cluster) %>% 
+  slice(chull(X, Y))
+
+# plot the clusters and nets
+tsne_data %>% 
+ggplot(aes(x = X, y = Y)) +
+  geom_point(aes(color = cluster), show.legend = FALSE) +
+  geom_text(data = tsne_summ, aes(X, Y, label = cluster), size = 7) +
+#  geom_text(aes(X, Y, label = label), check_overlap = TRUE) +
+  geom_polygon(data = hulls, aes(X, Y, fill = cluster), alpha = 0.7, show.legend = FALSE) +
+  theme_minimal() +
+  labs(title = "Cluster results of cohor data",
+       subtitle = "picking n clusters") +
+  theme(panel.grid = element_blank(), 
+        axis.text = element_blank(), 
+        axis.title = element_blank())
+```
+
+
+### Summary Statistics  
+
+```{r summary, eval=FALSE}
+clustered_cohort %>%  
+  group_by(cluster) %>% 
+  dfSummary(plain.ascii = FALSE, style = "grid", 
+          graph.magnif = 0.75, valid.col = FALSE)
+```
+
+### Extract the prototypes  
+
+```{r centers}
+prototypes <- clustered_cohort[pam_fit$medoids,]
+```
+
+
+## Write Results
+
+```{r write}
+write_csv(clustered_cohort, 'data/clustered_cohort.csv')
+write_csv(prototypes, 'data/proto.csv')
+```
+
+
+
+# Appendix  
+
+## Compare new records  
+
+```{r new records, eval=FALSE}
+# lets sample a 'new' student 
+n <- 2
+
+sample <- cohort_cleaned[sample(n),] %>% mutate(cluster = seq(n) +99)
+
+compare <- bind_rows(sample, prototypes) %>% 
+  column_to_rownames(var = "cluster") %>% 
+    select(program_career, is_minority, appointment_flag, is_local) 
+
+dm <- daisy(compare, metric = "gower")
+
+dm_mat <- as.matrix(dm)
+
+x <- dm_mat[seq(n), -seq(n)]
+
+apply(x, MARGIN = 1, FUN = function(x) which(x == min(x)))
+
+```
+
+
+
+## Multiple Comparisons  
+
+* ANOVA  
+* lm  
+
+
+```{r stat test}
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
